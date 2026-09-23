@@ -1,26 +1,53 @@
 import os
+import sys
+from pathlib import Path
+from contextlib import asynccontextmanager
 from typing import Optional
+
+# Ensure project root is available on sys.path
+CURRENT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = CURRENT_DIR.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+if str(CURRENT_DIR) not in sys.path:
+    sys.path.insert(0, str(CURRENT_DIR))
+
 from fastapi import FastAPI, HTTPException, status, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr, Field
 
-from config import settings
-from database import init_db, get_db
-from services.otp_service import OTPService
-from services.twilio_service import TwilioService
-from services.email_service import EmailService
+try:
+    from backend.config import settings
+    from backend.database import init_db, get_db
+    from backend.services.otp_service import OTPService
+    from backend.services.twilio_service import TwilioService
+    from backend.services.email_service import EmailService
+except ImportError:
+    from config import settings
+    from database import init_db, get_db
+    from services.otp_service import OTPService
+    from services.twilio_service import TwilioService
+    from services.email_service import EmailService
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Ensure database tables and indexes exist on app start."""
+    init_db()
+    yield
+
 
 # Initialize FastAPI Application
 app = FastAPI(
     title="Student DB & OTP Verification API",
     description="Backend API for student registration, Twilio SMS/Email verification, and analytics.",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan,
 )
 
 # ---------------------------------------------------------
 # CORS Middleware Configuration
 # ---------------------------------------------------------
-# Allows requests from local environments as well as live production sites (e.g., Netlify)
 ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
@@ -28,7 +55,7 @@ ALLOWED_ORIGINS = [
     "http://127.0.0.1:5500",
     "http://localhost:8000",
     "http://127.0.0.1:8000",
-    "*"  # In production, replace '*' with your specific Netlify domain URL
+    "*",
 ]
 
 app.add_middleware(
@@ -46,15 +73,6 @@ email_service = EmailService()
 
 
 # ---------------------------------------------------------
-# Lifespan / Startup Event
-# ---------------------------------------------------------
-@app.on_event("startup")
-def startup_event():
-    """Ensure database tables and indexes exist on app start."""
-    init_db()
-
-
-# ---------------------------------------------------------
 # Request / Response Schemas
 # ---------------------------------------------------------
 class StudentCreate(BaseModel):
@@ -68,7 +86,7 @@ class StudentCreate(BaseModel):
 class VerifyOTPRequest(BaseModel):
     identifier: str = Field(..., description="Phone number or email address to verify")
     otp: str = Field(..., min_length=4, max_length=10)
-    type: str = Field(..., regex="^(phone|email)$", description="Type must be either 'phone' or 'email'")
+    type: str = Field(..., pattern="^(phone|email)$", description="Type must be either 'phone' or 'email'")
 
 
 # ---------------------------------------------------------
@@ -88,7 +106,7 @@ def register_student(student: StudentCreate):
 
     with get_db() as conn:
         cursor = conn.cursor()
-        
+
         # Check uniqueness for email or phone
         cursor.execute(
             "SELECT id FROM students WHERE email = ? OR phone = ?",
@@ -105,7 +123,6 @@ def register_student(student: StudentCreate):
             INSERT INTO students (name, email, phone, department, semester)
             VALUES (?, ?, ?, ?, ?)
         """, (student.name.strip(), email_clean, phone_clean, student.department.strip(), student.semester))
-        conn.commit()
 
     # Generate and record verification OTPs
     phone_otp = otp_service.generate_otp(phone_clean)
@@ -116,7 +133,7 @@ def register_student(student: StudentCreate):
         to_phone=phone_clean,
         message=f"Your verification code is: {phone_otp}. Valid for 5 minutes."
     )
-    
+
     mail_sent = email_service.send_email(
         to_email=email_clean,
         subject="Student Portal Verification Code",
@@ -162,7 +179,6 @@ def verify_student_otp(payload: VerifyOTPRequest):
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Student record matching '{identifier}' was not found."
             )
-        conn.commit()
 
     return {"message": f"{payload.type.capitalize()} verified successfully."}
 
@@ -174,45 +190,48 @@ def get_analytics():
         cur = conn.cursor()
 
         # Aggregate counts
-        cur.execute("SELECT COUNT(*) FROM students")
-        total_students = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) AS count FROM students")
+        row = cur.fetchone()
+        total_students = row["count"] if row else 0
 
-        cur.execute("SELECT COUNT(*) FROM students WHERE phone_verified = 1 AND email_verified = 1")
-        fully_verified = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) AS count FROM students WHERE phone_verified = 1 AND email_verified = 1")
+        row = cur.fetchone()
+        fully_verified = row["count"] if row else 0
 
-        cur.execute("SELECT COUNT(*) FROM students WHERE phone_verified = 1 OR email_verified = 1")
-        partially_verified = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) AS count FROM students WHERE phone_verified = 1 OR email_verified = 1")
+        row = cur.fetchone()
+        partially_verified = row["count"] if row else 0
 
         # Breakdown by department
         cur.execute("""
-            SELECT department, COUNT(*) as count 
+            SELECT department, COUNT(*) AS count 
             FROM students 
             GROUP BY department 
             ORDER BY count DESC
         """)
-        dept_distribution = {row["department"]: row["count"] for row in cur.fetchall()}
+        dept_distribution = {r["department"]: r["count"] for r in cur.fetchall()}
 
         # Verification matrix
         cur.execute("""
             SELECT 
-                SUM(CASE WHEN phone_verified = 1 AND email_verified = 1 THEN 1 ELSE 0 END) as both_ok,
-                SUM(CASE WHEN phone_verified = 1 AND email_verified = 0 THEN 1 ELSE 0 END) as phone_only,
-                SUM(CASE WHEN phone_verified = 0 AND email_verified = 1 THEN 1 ELSE 0 END) as email_only,
-                SUM(CASE WHEN phone_verified = 0 AND email_verified = 0 THEN 1 ELSE 0 END) as unverified
+                SUM(CASE WHEN phone_verified = 1 AND email_verified = 1 THEN 1 ELSE 0 END) AS both_ok,
+                SUM(CASE WHEN phone_verified = 1 AND email_verified = 0 THEN 1 ELSE 0 END) AS phone_only,
+                SUM(CASE WHEN phone_verified = 0 AND email_verified = 1 THEN 1 ELSE 0 END) AS email_only,
+                SUM(CASE WHEN phone_verified = 0 AND email_verified = 0 THEN 1 ELSE 0 END) AS unverified
             FROM students
         """)
-        v_row = cur.fetchone()
+        v_row = cur.fetchone() or {}
 
-        # Registration trends (Last 7 daily aggregates)
+        # Registration trends (dual-engine compatible DATE casting)
         cur.execute("""
-            SELECT date(created_at) as reg_date, COUNT(*) as count 
+            SELECT CAST(created_at AS DATE) AS reg_date, COUNT(*) AS count 
             FROM students 
-            GROUP BY date(created_at) 
+            GROUP BY CAST(created_at AS DATE) 
             ORDER BY reg_date DESC 
             LIMIT 7
         """)
         trend_rows = cur.fetchall()
-        trends = [{"date": r["reg_date"], "count": r["count"]} for r in reversed(trend_rows)]
+        trends = [{"date": str(r["reg_date"]), "count": r["count"]} for r in reversed(trend_rows)]
 
     verification_rate = round((fully_verified / total_students * 100), 1) if total_students > 0 else 0.0
 
@@ -225,10 +244,10 @@ def get_analytics():
         },
         "department_distribution": dept_distribution,
         "verification_breakdown": {
-            "Fully Verified": v_row["both_ok"] or 0,
-            "Phone Only": v_row["phone_only"] or 0,
-            "Email Only": v_row["email_only"] or 0,
-            "Unverified": v_row["unverified"] or 0
+            "Fully Verified": v_row.get("both_ok") or 0,
+            "Phone Only": v_row.get("phone_only") or 0,
+            "Email Only": v_row.get("email_only") or 0,
+            "Unverified": v_row.get("unverified") or 0
         },
         "registration_trend": trends
     }
@@ -266,10 +285,11 @@ def get_students(
 
     with get_db() as conn:
         cur = conn.cursor()
-        
+
         # Total matching records count
-        cur.execute(f"SELECT COUNT(*) FROM students WHERE {where_sql}", params)
-        total_records = cur.fetchone()[0]
+        cur.execute(f"SELECT COUNT(*) AS count FROM students WHERE {where_sql}", params)
+        count_row = cur.fetchone()
+        total_records = count_row["count"] if count_row else 0
 
         # Paginated query
         cur.execute(f"""
@@ -280,7 +300,7 @@ def get_students(
             LIMIT ? OFFSET ?
         """, (*params, limit, offset))
 
-        students = [dict(r) for r in cur.fetchall()]
+        students = cur.fetchall()
 
     total_pages = (total_records + limit - 1) // limit if total_records > 0 else 1
 
@@ -298,4 +318,4 @@ def get_students(
 # ---------------------------------------------------------
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("backend.app:app", host=settings.APP_HOST, port=settings.APP_PORT, reload=settings.DEBUG)
+    uvicorn.run("backend.main:app", host=settings.APP_HOST, port=settings.APP_PORT, reload=settings.DEBUG)
