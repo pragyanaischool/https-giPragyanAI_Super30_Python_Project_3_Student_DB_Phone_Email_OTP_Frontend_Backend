@@ -1,12 +1,17 @@
-"""Application configuration settings using Pydantic Settings.
-
-Reads environment variables from the OS or a local .env file with production-ready
-defaults for SQLite/PostgreSQL, Twilio SMS, and SMTP email services.
-"""
+"""Application configuration settings."""
 
 import os
 from typing import Optional
-from pydantic_settings import BaseSettings
+
+try:
+    from pydantic_settings import BaseSettings
+except ImportError:
+    try:
+        from pydantic import BaseSettings
+    except ImportError:
+        # Fallback basic object if neither is available in runtime
+        class BaseSettings:
+            pass
 
 
 class Settings(BaseSettings):
