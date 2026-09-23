@@ -1,200 +1,188 @@
-"""Database connection and lifecycle manager.
+"""Database Seeder Script.
 
-Provides dual-engine compatibility for SQLite (local development) and
-PostgreSQL (Render managed database), including dynamic schema initialization,
-connection pooling context management, and row-dict mapping.
+Initializes tables and seeds:
+- 1 Superadmin account
+- 125 Student records across 5 academic departments with varying verification states
+
+Fully compatible with both SQLite and PostgreSQL via the backend abstraction layer.
 """
 
 import os
-import sqlite3
-from contextlib import contextmanager
-from typing import Generator, Any, Dict, List, Optional
-from backend.config import settings
+import sys
+from pathlib import Path
 
-# Determine database engine from DATABASE_URL
-DB_URL = settings.DATABASE_URL
-IS_POSTGRES = DB_URL.startswith("postgresql://") or DB_URL.startswith("postgres://")
+# Ensure project root is prioritized on sys.path before any package imports occur
+CURRENT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = CURRENT_DIR.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+if str(CURRENT_DIR) not in sys.path:
+    sys.path.insert(0, str(CURRENT_DIR))
 
-if IS_POSTGRES:
-    import psycopg2
-    from psycopg2.extras import RealDictCursor
+import hashlib
+import random
 
+# Internal imports with fallback handling
+try:
+    from backend.config import settings
+    from backend.database import init_db, get_db
+except ImportError:
+    from config import settings
+    from database import init_db, get_db
 
-class UnifiedCursor:
-    """Cursor wrapper that transparently adapts parameter placeholders between
-    SQLite ('?') and PostgreSQL ('%s') and returns row dictionaries.
-    """
+# Deterministic random seed for consistent sample data generation
+random.seed(42)
 
-    def __init__(self, raw_cursor, is_postgres: bool):
-        self._cursor = raw_cursor
-        self._is_postgres = is_postgres
+FIRST_NAMES = [
+    "Aarav", "Vivaan", "Aditya", "Vihaan", "Arjun", "Sai", "Reyansh", "Ayaan", "Krishna", "Ishaan",
+    "Shaurya", "Atharva", "Dhruv", "Kabir", "Rudra", "Diya", "Saanvi", "Ananya", "Aadhya", "Pari",
+    "Fatima", "Isha", "Anushka", "Myra", "Aarohi", "Navya", "Riya", "Kiara", "Kavya", "Tara",
+    "Rohan", "Rahul", "Pooja", "Neha", "Vikram", "Suresh", "Manish", "Deepak", "Sneha", "Kriti",
+    "Gaurav", "Simran", "Nikhil", "Meera", "Kunal", "Tanvi", "Abhishek", "Shweta", "Harsh", "Pragya"
+]
 
-    def execute(self, query: str, params: Optional[tuple] = None):
-        if self._is_postgres:
-            if "?" in query and "%s" not in query:
-                query = query.replace("?", "%s")
-            return self._cursor.execute(query, params or ())
-        else:
-            if "%s" in query and "?" not in query:
-                query = query.replace("%s", "?")
-            return self._cursor.execute(query, params or ())
+LAST_NAMES = [
+    "Sharma", "Verma", "Gupta", "Patel", "Mehta", "Reddy", "Nair", "Iyer", "Rao", "Kumar",
+    "Singh", "Chauhan", "Joshi", "Mishra", "Pandey", "Bose", "Das", "Banerjee", "Chatterjee", "Bhat",
+    "Kulkarni", "Deshmukh", "Patil", "Pillai", "Menon", "Saxena", "Soni", "Agarwal", "Bhardwaj", "Malhotra"
+]
 
-    def executemany(self, query: str, seq_of_params):
-        if self._is_postgres:
-            if "?" in query and "%s" not in query:
-                query = query.replace("?", "%s")
-            return self._cursor.executemany(query, seq_of_params)
-        else:
-            if "%s" in query and "?" not in query:
-                query = query.replace("%s", "?")
-            return self._cursor.executemany(query, seq_of_params)
-
-    def fetchone(self) -> Optional[Dict[str, Any]]:
-        row = self._cursor.fetchone()
-        if row is None:
-            return None
-        return dict(row)
-
-    def fetchall(self) -> List[Dict[str, Any]]:
-        rows = self._cursor.fetchall()
-        return [dict(r) for r in rows]
-
-    @property
-    def lastrowid(self):
-        if self._is_postgres:
-            return getattr(self._cursor, "lastrowid", None)
-        return self._cursor.lastrowid
-
-    @property
-    def rowcount(self):
-        return self._cursor.rowcount
-
-    def close(self):
-        self._cursor.close()
+DEPARTMENTS = [
+    "Computer Science",
+    "Artificial Intelligence",
+    "Data Science",
+    "Information Tech",
+    "Electronics"
+]
 
 
-class UnifiedConnection:
-    """Connection wrapper ensuring uniform commit, rollback, and cursor operations."""
-
-    def __init__(self, raw_connection, is_postgres: bool):
-        self._connection = raw_connection
-        self._is_postgres = is_postgres
-
-    def cursor(self) -> UnifiedCursor:
-        if self._is_postgres:
-            return UnifiedCursor(self._connection.cursor(cursor_factory=RealDictCursor), is_postgres=True)
-        return UnifiedCursor(self._connection.cursor(), is_postgres=False)
-
-    def commit(self):
-        self._connection.commit()
-
-    def rollback(self):
-        self._connection.rollback()
-
-    def close(self):
-        self._connection.close()
+def hash_password(password: str) -> str:
+    """Generates SHA-256 password hash for administrator credentials."""
+    return hashlib.sha256(password.encode("utf-8")).hexdigest()
 
 
-def get_raw_connection() -> UnifiedConnection:
-    """Establishes an active connection to the designated database engine."""
-    if IS_POSTGRES:
-        url = DB_URL
-        if url.startswith("postgres://"):
-            url = url.replace("postgres://", "postgresql://", 1)
-        raw_conn = psycopg2.connect(url)
-        return UnifiedConnection(raw_conn, is_postgres=True)
-    else:
-        if DB_URL.startswith("sqlite:///"):
-            path = DB_URL.replace("sqlite:///", "")
-        else:
-            path = settings.DATABASE_PATH
+def seed_database():
+    print("[*] Initializing database schema...")
+    init_db()
 
-        raw_conn = sqlite3.connect(path, timeout=15.0)
-        raw_conn.execute("PRAGMA journal_mode=WAL;")
-        raw_conn.execute("PRAGMA synchronous=NORMAL;")
-        raw_conn.execute("PRAGMA foreign_keys=ON;")
-        raw_conn.row_factory = sqlite3.Row
-        return UnifiedConnection(raw_conn, is_postgres=False)
-
-
-def init_db() -> None:
-    """Initializes tables and indexes, executing each DDL statement individually."""
     with get_db() as conn:
         cursor = conn.cursor()
 
-        if IS_POSTGRES:
-            statements = [
-                """
-                CREATE TABLE IF NOT EXISTS admins (
-                    id SERIAL PRIMARY KEY,
-                    username VARCHAR(100) UNIQUE NOT NULL,
-                    email VARCHAR(255) UNIQUE NOT NULL,
-                    password_hash VARCHAR(255) NOT NULL,
-                    role VARCHAR(50) DEFAULT 'superadmin',
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
-                """,
-                """
-                CREATE TABLE IF NOT EXISTS students (
-                    id SERIAL PRIMARY KEY,
-                    name VARCHAR(150) NOT NULL,
-                    email VARCHAR(255) UNIQUE NOT NULL,
-                    phone VARCHAR(50) UNIQUE NOT NULL,
-                    department VARCHAR(100) NOT NULL,
-                    semester INT CHECK (semester BETWEEN 1 AND 8),
-                    phone_verified SMALLINT DEFAULT 0 CHECK (phone_verified IN (0, 1)),
-                    email_verified SMALLINT DEFAULT 0 CHECK (email_verified IN (0, 1)),
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
-                """,
-                "CREATE INDEX IF NOT EXISTS idx_students_email ON students(email);",
-                "CREATE INDEX IF NOT EXISTS idx_students_phone ON students(phone);",
-                "CREATE INDEX IF NOT EXISTS idx_students_dept ON students(department);"
-            ]
+        # -------------------------------------------------------------
+        # 1. Superadmin Seeding (Idempotent)
+        # -------------------------------------------------------------
+        admin_username = "admin"
+        admin_email = "admin@eduportal.ac.in"
+        admin_password_hash = hash_password("admin123")
+
+        cursor.execute("SELECT id FROM admins WHERE username = ? OR email = ?", (admin_username, admin_email))
+        existing_admin = cursor.fetchone()
+
+        if not existing_admin:
+            cursor.execute("""
+                INSERT INTO admins (username, email, password_hash, role)
+                VALUES (?, ?, ?, ?)
+            """, (admin_username, admin_email, admin_password_hash, "superadmin"))
+            print(f"[+] Admin account created -> Username: '{admin_username}', Password: 'admin123'")
         else:
-            statements = [
-                """
-                CREATE TABLE IF NOT EXISTS admins (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    username TEXT UNIQUE NOT NULL,
-                    email TEXT UNIQUE NOT NULL,
-                    password_hash TEXT NOT NULL,
-                    role TEXT DEFAULT 'superadmin',
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
-                """,
-                """
-                CREATE TABLE IF NOT EXISTS students (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name TEXT NOT NULL,
-                    email TEXT UNIQUE NOT NULL,
-                    phone TEXT UNIQUE NOT NULL,
-                    department TEXT NOT NULL,
-                    semester INTEGER CHECK (semester BETWEEN 1 AND 8),
-                    phone_verified INTEGER DEFAULT 0 CHECK (phone_verified IN (0, 1)),
-                    email_verified INTEGER DEFAULT 0 CHECK (email_verified IN (0, 1)),
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
-                """,
-                "CREATE INDEX IF NOT EXISTS idx_students_email ON students(email);",
-                "CREATE INDEX IF NOT EXISTS idx_students_phone ON students(phone);",
-                "CREATE INDEX IF NOT EXISTS idx_students_dept ON students(department);"
-            ]
+            print("[i] Superadmin account already exists. Skipping insertion.")
 
-        for stmt in statements:
-            cursor.execute(stmt.strip())
+        # -------------------------------------------------------------
+        # 2. Student Records Seeding
+        # -------------------------------------------------------------
+        cursor.execute("SELECT COUNT(*) AS count FROM students")
+        row = cursor.fetchone()
+        current_student_count = row["count"] if row else 0
 
-        conn.commit()
+        target_total = 125
+        needed = target_total - current_student_count
+
+        if needed <= 0:
+            print(f"[i] Student directory already contains {current_student_count} records (>= {target_total}). Skipping.")
+        else:
+            print(f"[*] Seeding {needed} new student records to reach {target_total} total...")
+
+            existing_emails = set()
+            existing_phones = set()
+
+            cursor.execute("SELECT email, phone FROM students")
+            for record in cursor.fetchall():
+                existing_emails.add(record["email"])
+                existing_phones.add(record["phone"])
+
+            student_records = []
+
+            for i in range(1, needed + 1):
+                first = random.choice(FIRST_NAMES)
+                last = random.choice(LAST_NAMES)
+                name = f"{first} {last}"
+
+                # Generate unique email address
+                slug = f"{first.lower()}.{last.lower()}{current_student_count + i}"
+                email = f"{slug}@student.edu"
+                while email in existing_emails:
+                    email = f"{slug}.{random.randint(10, 999)}@student.edu"
+                existing_emails.add(email)
+
+                # Generate unique phone number (+91 prefix)
+                phone_tail = f"{random.randint(6000000000, 9999999999)}"
+                phone = f"+91{phone_tail}"
+                while phone in existing_phones:
+                    phone = f"+91{random.randint(6000000000, 9999999999)}"
+                existing_phones.add(phone)
+
+                dept = random.choice(DEPARTMENTS)
+                semester = random.randint(1, 8)
+
+                # Status distribution: ~50% verified, ~25% phone-only, ~15% email-only, ~10% unverified
+                rand_val = random.random()
+                if rand_val < 0.50:
+                    phone_ver, email_ver = 1, 1
+                elif rand_val < 0.75:
+                    phone_ver, email_ver = 1, 0
+                elif rand_val < 0.90:
+                    phone_ver, email_ver = 0, 1
+                else:
+                    phone_ver, email_ver = 0, 0
+
+                student_records.append((name, email, phone, dept, semester, phone_ver, email_ver))
+
+            # Batch insert rows using unified parameter placeholders
+            cursor.executemany("""
+                INSERT INTO students (name, email, phone, department, semester, phone_verified, email_verified)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, student_records)
+
+            conn.commit()
+            print(f"[+] Successfully inserted {len(student_records)} student records.")
+
+        # -------------------------------------------------------------
+        # 3. Post-Seeding Health & Metrics Check
+        # -------------------------------------------------------------
+        cursor.execute("SELECT COUNT(*) AS total FROM students")
+        total = cursor.fetchone()["total"]
+
+        cursor.execute("""
+            SELECT
+                SUM(CASE WHEN phone_verified = 1 AND email_verified = 1 THEN 1 ELSE 0 END) AS full_ver,
+                SUM(CASE WHEN phone_verified = 0 AND email_verified = 0 THEN 1 ELSE 0 END) AS unverified
+            FROM students
+        """)
+        diag = cursor.fetchone()
+
+        print("\n" + "=" * 54)
+        print("DATABASE POPULATION SUMMARY")
+        print("=" * 54)
+        print(f" Total Student Records  : {total}")
+        print(f" Fully Verified (2-Step): {diag['full_ver'] or 0}")
+        print(f" Unverified Records     : {diag['unverified'] or 0}")
+        print(f" Superadmin Login       : admin / admin123")
+        print("=" * 54 + "\n")
 
 
-@contextmanager
-def get_db() -> Generator[UnifiedConnection, None, None]:
-    """Context manager for obtaining a database connection with auto-rollback on error."""
-    connection = get_raw_connection()
+if __name__ == "__main__":
     try:
-        yield connection
-    except Exception:
-        connection.rollback()
-        raise
-    finally:
-        connection.close()
+        seed_database()
+    except Exception as err:
+        print(f"[!] Seeding failed: {err}", file=sys.stderr)
+        sys.exit(1)
