@@ -6,3 +6,4 @@ twilio
 pytest
 httpx
 psycopg2-binary
+pydantic-settings
