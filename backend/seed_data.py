@@ -10,7 +10,7 @@ Fully compatible with both SQLite and PostgreSQL via the backend.database abstra
 import hashlib
 import random
 import sys
-from backend.database import init_db, get_db
+from database import init_db, get_db
 
 # Deterministic random seed for reproducible records
 random.seed(42)
