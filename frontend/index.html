@@ -149,6 +149,7 @@
         </header>
 
         <div class="student-form-container card">
+          <!-- Step 1: Registration Form -->
           <form id="studentRegistrationForm" onsubmit="handleRegistration(event)">
             <h3>New Student Registration</h3>
             
@@ -188,30 +189,57 @@
             <button type="submit" id="submitRegBtn" class="btn btn-primary full-width">Register & Send OTPs</button>
           </form>
 
-          <!-- OTP Verification Drawer -->
+          <!-- Step 2: Enhanced 2-Step OTP Verification Drawer -->
           <div id="otpDrawer" class="otp-box hidden">
             <hr class="divider">
-            <h3>Verify Contact Details</h3>
-            <p class="subtext">Enter the 6-digit codes sent to your Phone (SMS) and Email address.</p>
+            <div class="otp-header">
+              <h3>Verify Contact Details</h3>
+              <p class="subtext">Enter the 6-digit codes sent to your registered contact channels.</p>
+            </div>
 
             <div class="otp-input-row">
+              <!-- SMS Verification Card -->
               <div class="otp-card">
-                <label for="phoneOtpInput">📱 Phone SMS OTP</label>
+                <div class="otp-channel-header">
+                  <label for="phoneOtpInput">📱 SMS Verification</label>
+                  <button type="button" id="btnResendPhone" class="btn-resend" onclick="handleResendOTP('phone')">
+                    Resend SMS
+                  </button>
+                </div>
+                <div class="channel-target-info" id="displayPhoneLabel">+91...</div>
                 <div class="input-inline">
-                  <input type="text" id="phoneOtpInput" maxlength="6" placeholder="000000">
+                  <input type="text" id="phoneOtpInput" maxlength="6" placeholder="6-digit code">
                   <button type="button" class="btn btn-success" id="btnVerifyPhone" onclick="verifyOTP('phone')">Verify</button>
                 </div>
                 <span id="phoneVerifyBadge" class="verify-status"></span>
               </div>
 
+              <!-- Email Verification Card -->
               <div class="otp-card">
-                <label for="emailOtpInput">📧 Email OTP</label>
+                <div class="otp-channel-header">
+                  <label for="emailOtpInput">📧 Email Verification</label>
+                  <button type="button" id="btnResendEmail" class="btn-resend" onclick="handleResendOTP('email')">
+                    Resend Email
+                  </button>
+                </div>
+                <div class="channel-target-info" id="displayEmailLabel">user@...</div>
                 <div class="input-inline">
-                  <input type="text" id="emailOtpInput" maxlength="6" placeholder="000000">
+                  <input type="text" id="emailOtpInput" maxlength="6" placeholder="6-digit code">
                   <button type="button" class="btn btn-success" id="btnVerifyEmail" onclick="verifyOTP('email')">Verify</button>
                 </div>
                 <span id="emailVerifyBadge" class="verify-status"></span>
               </div>
+            </div>
+
+            <!-- Developer / Network Latency Code Inspector -->
+            <div class="debug-inspector-box">
+              <div class="debug-inspector-content">
+                <span>⚠️ Carrier delay or running in mock mode?</span>
+                <button type="button" class="btn btn-secondary btn-sm" onclick="fetchActiveOtpDebug()">
+                  🔍 Inspect Active Test OTPs
+                </button>
+              </div>
+              <div id="debugCodesContainer" class="hidden"></div>
             </div>
           </div>
 
