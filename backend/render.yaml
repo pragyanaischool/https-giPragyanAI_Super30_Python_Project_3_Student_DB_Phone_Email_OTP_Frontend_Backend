@@ -1,17 +1,10 @@
-databases:
-  - name: student-db-postgres
-    databaseName: student_db
-    user: student_user
-    region: oregon
-    plan: free
-
 services:
   - type: web
     name: student-verification-backend
     runtime: python
     region: oregon
     plan: free
-    buildCommand: "pip install -r requirements.txt && python seed_data.py"
+    buildCommand: "pip install -r requirements.txt && python -m backend.seed_data"
     startCommand: "uvicorn backend.app:app --host 0.0.0.0 --port $PORT"
     healthCheckPath: /api/health
     autoDeploy: true
@@ -23,9 +16,7 @@ services:
       - key: OTP_EXPIRY_SECONDS
         value: 300
       - key: DATABASE_URL
-        fromDatabase:
-          name: student-db-postgres
-          property: connectionString
+        sync: false
       - key: SMTP_SERVER
         value: smtp.gmail.com
       - key: SMTP_PORT
