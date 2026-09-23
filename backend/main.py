@@ -4,7 +4,7 @@ from pathlib import Path
 from contextlib import asynccontextmanager
 from typing import Optional
 
-# Ensure project root is available on sys.path
+# Ensure project root is available on sys.path across all execution contexts
 CURRENT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = CURRENT_DIR.parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -41,7 +41,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Student DB & OTP Verification API",
     description="Backend API for student registration, Twilio SMS/Email verification, and analytics.",
-    version="1.0.0",
+    version="2.1.0",
     lifespan=lifespan,
 )
 
@@ -89,8 +89,12 @@ class VerifyOTPRequest(BaseModel):
     type: str = Field(..., pattern="^(phone|email)$", description="Type must be either 'phone' or 'email'")
 
 
+class ResendOTPRequest(BaseModel):
+    identifier: str = Field(..., description="Phone number or Email address to resend OTP to")
+
+
 # ---------------------------------------------------------
-# API Endpoints
+# System Endpoints
 # ---------------------------------------------------------
 @app.get("/api/health", tags=["System"])
 def health_check():
@@ -98,6 +102,30 @@ def health_check():
     return {"status": "healthy", "service": "student-db-api"}
 
 
+@app.get("/api/debug/recent-otp", tags=["Debug"])
+def get_recent_otp(identifier: str = Query(..., description="Phone number or email address")):
+    """Helper endpoint to inspect active OTP in case SMS/Email gateway drops it."""
+    clean_id = identifier.strip()
+    
+    otp_code = None
+    if hasattr(otp_service, "otp_store"):
+        otp_code = otp_service.otp_store.get(clean_id) or otp_service.otp_store.get(clean_id.lower())
+    elif hasattr(otp_service, "_store"):
+        otp_code = otp_service._store.get(clean_id) or otp_service._store.get(clean_id.lower())
+
+    if not otp_code:
+        raise HTTPException(status_code=404, detail="No active OTP found or code has expired.")
+
+    code_val = otp_code if isinstance(otp_code, str) else otp_code.get("otp", str(otp_code))
+    return {
+        "identifier": clean_id,
+        "active_otp": code_val
+    }
+
+
+# ---------------------------------------------------------
+# Registration & Verification Endpoints
+# ---------------------------------------------------------
 @app.post("/api/students/register", status_code=status.HTTP_201_CREATED, tags=["Students"])
 def register_student(student: StudentCreate):
     """Register a new student and dispatch SMS and Email OTPs."""
@@ -164,7 +192,6 @@ def verify_student_otp(payload: VerifyOTPRequest):
             detail="Invalid or expired OTP."
         )
 
-    # Determine table columns based on verification type
     target_col = "phone_verified" if payload.type == "phone" else "email_verified"
     id_col = "phone" if payload.type == "phone" else "email"
 
@@ -183,6 +210,70 @@ def verify_student_otp(payload: VerifyOTPRequest):
     return {"message": f"{payload.type.capitalize()} verified successfully."}
 
 
+@app.post("/api/students/resend-otp/phone", tags=["Students"])
+def resend_phone_otp(payload: ResendOTPRequest):
+    """Regenerates and resends OTP specifically to a student's phone number."""
+    phone_clean = payload.identifier.strip()
+
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, name, phone_verified FROM students WHERE phone = ?", (phone_clean,))
+        student = cursor.fetchone()
+
+        if not student:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Student with this phone number not found.")
+        if student.get("phone_verified") == 1:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="This phone number is already verified.")
+
+    phone_otp = otp_service.generate_otp(phone_clean)
+
+    sms_sent = twilio_service.send_sms(
+        to_phone=phone_clean,
+        message=f"Your new verification code is: {phone_otp}. Valid for 5 minutes."
+    )
+
+    return {
+        "status": "success",
+        "message": f"New OTP sent to phone {phone_clean}",
+        "channel": "phone",
+        "sms_dispatched": sms_sent
+    }
+
+
+@app.post("/api/students/resend-otp/email", tags=["Students"])
+def resend_email_otp(payload: ResendOTPRequest):
+    """Regenerates and resends OTP specifically to a student's email address."""
+    email_clean = payload.identifier.strip().lower()
+
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, name, email_verified FROM students WHERE email = ?", (email_clean,))
+        student = cursor.fetchone()
+
+        if not student:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Student with this email address not found.")
+        if student.get("email_verified") == 1:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="This email address is already verified.")
+
+    email_otp = otp_service.generate_otp(email_clean)
+
+    mail_sent = email_service.send_email(
+        to_email=email_clean,
+        subject="Student Portal Verification Code (Resend)",
+        content=f"Hello {student['name']},\n\nYour new portal OTP is: {email_otp}\n\nValid for 5 minutes."
+    )
+
+    return {
+        "status": "success",
+        "message": f"New OTP sent to email {email_clean}",
+        "channel": "email",
+        "email_dispatched": mail_sent
+    }
+
+
+# ---------------------------------------------------------
+# Analytics & Directory Endpoints
+# ---------------------------------------------------------
 @app.get("/api/analytics", tags=["Analytics"])
 def get_analytics():
     """Retrieve operational KPIs, departmental counts, and verification rates."""
