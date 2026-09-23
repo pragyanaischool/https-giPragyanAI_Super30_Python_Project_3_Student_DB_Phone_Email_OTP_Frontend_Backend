@@ -1,3 +1,10 @@
+databases:
+  - name: student-db-postgres
+    databaseName: student_db
+    user: student_user
+    region: oregon
+    plan: free
+
 services:
   - type: web
     name: student-verification-backend
@@ -13,10 +20,12 @@ services:
         value: 3.11.9
       - key: APP_HOST
         value: 0.0.0.0
-      - key: DATABASE_PATH
-        value: students.db
       - key: OTP_EXPIRY_SECONDS
         value: 300
+      - key: DATABASE_URL
+        fromDatabase:
+          name: student-db-postgres
+          property: connectionString
       - key: SMTP_SERVER
         value: smtp.gmail.com
       - key: SMTP_PORT
