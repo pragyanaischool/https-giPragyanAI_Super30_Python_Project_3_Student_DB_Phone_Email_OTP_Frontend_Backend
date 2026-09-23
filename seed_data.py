@@ -1,158 +1,173 @@
-import sqlite3
-import random
-import hashlib
-from datetime import datetime, timedelta
+"""Database Seeder Script.
 
-# Default path matches settings.DATABASE_PATH
-DB_PATH = "students.db"
+Initializes tables and seeds:
+- 1 Superadmin account
+- 125 Student records across 5 academic departments with varying verification states
+
+Fully compatible with both SQLite and PostgreSQL via the backend.database abstraction layer.
+"""
+
+import hashlib
+import random
+import sys
+from backend.database import init_db, get_db
+
+# Deterministic random seed for reproducible records
+random.seed(42)
 
 FIRST_NAMES = [
-    "Aarav", "Aditi", "Rohan", "Pooja", "Vikram", "Sneha", "Rahul", "Ananya",
-    "Karan", "Ishita", "Arjun", "Priyanka", "Amit", "Divya", "Siddharth", "Neha",
-    "Manish", "Tanvi", "Kunal", "Riya", "Gaurav", "Simran", "Deepak", "Kavya",
-    "Nikhil", "Meera", "Varun", "Shruti", "Akash", "Tanya", "Harsh", "Bhavna",
-    "Mayank", "Shweta", "Yash", "Kritika", "Abhishek", "Ritika", "Prateek", "Sakshi"
+    "Aarav", "Vivaan", "Aditya", "Vihaan", "Arjun", "Sai", "Reyansh", "Ayaan", "Krishna", "Ishaan",
+    "Shaurya", "Atharva", "Dhruv", "Kabir", "Rudra", "Diya", "Saanvi", "Ananya", "Aadhya", "Pari",
+    "Fatima", "Isha", "Anushka", "Myra", "Aarohi", "Navya", "Riya", "Kiara", "Kavya", "Tara",
+    "Rohan", "Rahul", "Pooja", "Neha", "Vikram", "Suresh", "Manish", "Deepak", "Sneha", "Kriti",
+    "Gaurav", "Simran", "Nikhil", "Meera", "Kunal", "Tanvi", "Abhishek", "Shweta", "Harsh", "Pragya"
 ]
 
 LAST_NAMES = [
-    "Sharma", "Verma", "Gupta", "Patel", "Mehta", "Singh", "Reddy", "Nair",
-    "Iyer", "Chopra", "Joshi", "Bhatia", "Deshmukh", "Agarwal", "Rao", "Kumar",
-    "Mishra", "Pandey", "Saxena", "Choudhury"
+    "Sharma", "Verma", "Gupta", "Patel", "Mehta", "Reddy", "Nair", "Iyer", "Rao", "Kumar",
+    "Singh", "Chauhan", "Joshi", "Mishra", "Pandey", "Bose", "Das", "Banerjee", "Chatterjee", "Bhat",
+    "Kulkarni", "Deshmukh", "Patil", "Pillai", "Menon", "Saxena", "Soni", "Agarwal", "Bhardwaj", "Malhotra"
 ]
 
 DEPARTMENTS = [
     "Computer Science",
     "Artificial Intelligence",
-    "Information Tech",
     "Data Science",
+    "Information Tech",
     "Electronics"
 ]
 
 
 def hash_password(password: str) -> str:
-    """Returns a SHA-256 hash of the plain-text password."""
+    """Computes a secure SHA-256 digest for admin credentials."""
     return hashlib.sha256(password.encode("utf-8")).hexdigest()
 
 
-def seed_database(total_students: int = 125) -> None:
-    """Seeds admin and student records into SQLite."""
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
+def seed_database():
+    print("[*] Initializing database schema...")
+    init_db()
 
-    # 1. Ensure required tables exist
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS admins (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE NOT NULL,
-            email TEXT UNIQUE NOT NULL,
-            password_hash TEXT NOT NULL,
-            role TEXT NOT NULL DEFAULT 'superadmin',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-    """)
+    with get_db() as conn:
+        cursor = conn.cursor()
 
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS students (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            email TEXT UNIQUE NOT NULL,
-            phone TEXT UNIQUE NOT NULL,
-            department TEXT NOT NULL,
-            semester INTEGER NOT NULL CHECK (semester BETWEEN 1 AND 8),
-            phone_verified INTEGER NOT NULL DEFAULT 0 CHECK (phone_verified IN (0, 1)),
-            email_verified INTEGER NOT NULL DEFAULT 0 CHECK (email_verified IN (0, 1)),
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-    """)
+        # -------------------------------------------------------------
+        # 1. Seed Superadmin Account (Idempotent)
+        # -------------------------------------------------------------
+        admin_username = "admin"
+        admin_email = "admin@eduportal.ac.in"
+        admin_password_hash = hash_password("admin123")
 
-    # 2. Reset existing records for a clean run
-    cur.execute("DELETE FROM students;")
-    cur.execute("DELETE FROM admins;")
-    cur.execute("DELETE FROM sqlite_sequence WHERE name IN ('students', 'admins');")
+        cursor.execute("SELECT id FROM admins WHERE username = ? OR email = ?", (admin_username, admin_email))
+        existing_admin = cursor.fetchone()
 
-    # 3. Seed Default Admin Account
-    admin_user = "admin"
-    admin_email = "admin@pragyanai.com"
-    admin_pass = hash_password("admin123")
-    
-    cur.execute("""
-        INSERT INTO admins (username, email, password_hash, role)
-        VALUES (?, ?, ?, ?)
-    """, (admin_user, admin_email, admin_pass, "superadmin"))
-
-    # 4. Generate Unique Student Records
-    used_emails = set()
-    used_phones = set()
-    students_batch = []
-
-    now = datetime.now()
-
-    for idx in range(1, total_students + 1):
-        first_name = random.choice(FIRST_NAMES)
-        last_name = random.choice(LAST_NAMES)
-        full_name = f"{first_name} {last_name}"
-
-        # Ensure guaranteed unique email
-        email_candidate = f"{first_name.lower()}.{last_name.lower()}{random.randint(10, 999)}@gmail.com"
-        while email_candidate in used_emails:
-            email_candidate = f"{first_name.lower()}.{last_name.lower()}{random.randint(1000, 99999)}@gmail.com"
-        used_emails.add(email_candidate)
-
-        # Ensure guaranteed unique phone number (E.164 format)
-        phone_candidate = f"+91{random.randint(6000000000, 9999999999)}"
-        while phone_candidate in used_phones:
-            phone_candidate = f"+91{random.randint(6000000000, 9999999999)}"
-        used_phones.add(phone_candidate)
-
-        dept = random.choice(DEPARTMENTS)
-        semester = random.randint(1, 8)
-
-        # Realistic distribution: ~50% both, ~25% phone only, ~15% email only, ~10% none
-        dice = random.random()
-        if dice < 0.50:
-            phone_verified, email_verified = 1, 1
-        elif dice < 0.75:
-            phone_verified, email_verified = 1, 0
-        elif dice < 0.90:
-            phone_verified, email_verified = 0, 1
+        if not existing_admin:
+            cursor.execute("""
+                INSERT INTO admins (username, email, password_hash, role)
+                VALUES (?, ?, ?, ?)
+            """, (admin_username, admin_email, admin_password_hash, "superadmin"))
+            print(f"[+] Admin account created -> Username: '{admin_username}', Password: 'admin123'")
         else:
-            phone_verified, email_verified = 0, 0
+            print("[i] Admin record already present. Skipping.")
 
-        # Spread timestamps over the last 30 days
-        days_back = random.randint(0, 30)
-        hours_back = random.randint(0, 23)
-        minutes_back = random.randint(0, 59)
-        created_time = (now - timedelta(days=days_back, hours=hours_back, minutes=minutes_back)).strftime("%Y-%m-%d %H:%M:%S")
+        # -------------------------------------------------------------
+        # 2. Seed 125 Student Records
+        # -------------------------------------------------------------
+        cursor.execute("SELECT COUNT(*) AS count FROM students")
+        row = cursor.fetchone()
+        current_student_count = row["count"] if row else 0
 
-        students_batch.append((
-            full_name,
-            email_candidate,
-            phone_candidate,
-            dept,
-            semester,
-            phone_verified,
-            email_verified,
-            created_time
-        ))
+        target_total = 125
+        needed = target_total - current_student_count
 
-    # 5. Bulk Insert
-    cur.executemany("""
-        INSERT INTO students (
-            name, email, phone, department, semester, 
-            phone_verified, email_verified, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    """, students_batch)
+        if needed <= 0:
+            print(f"[i] Student directory already contains {current_student_count} records (>= {target_total}). Skipping.")
+        else:
+            print(f"[*] Seeding {needed} new student records to reach {target_total} total...")
 
-    conn.commit()
-    conn.close()
+            existing_emails = set()
+            existing_phones = set()
 
-    print("==================================================")
-    print("Database seeding completed successfully!")
-    print(f"Total Admin Records Created : 1 (User: {admin_user} / Pass: admin123)")
-    print(f"Total Student Records Created: {total_students}")
-    print(f"Target Database File       : {DB_PATH}")
-    print("==================================================")
+            cursor.execute("SELECT email, phone FROM students")
+            for record in cursor.fetchall():
+                existing_emails.add(record["email"])
+                existing_phones.add(record["phone"])
+
+            inserted_count = 0
+            student_records = []
+
+            for i in range(1, needed + 1):
+                # Form unique names, emails, and phones
+                first = random.choice(FIRST_NAMES)
+                last = random.choice(LAST_NAMES)
+                name = f"{first} {last}"
+
+                # Generate unique email
+                slug = f"{first.lower()}.{last.lower()}{current_student_count + i}"
+                email = f"{slug}@student.edu"
+                while email in existing_emails:
+                    email = f"{slug}.{random.randint(10, 999)}@student.edu"
+                existing_emails.add(email)
+
+                # Generate unique 10-digit Indian phone with +91 country prefix
+                phone_tail = f"{random.randint(6000000000, 9999999999)}"
+                phone = f"+91{phone_tail}"
+                while phone in existing_phones:
+                    phone = f"+91{random.randint(6000000000, 9999999999)}"
+                existing_phones.add(phone)
+
+                dept = random.choice(DEPARTMENTS)
+                semester = random.randint(1, 8)
+
+                # Realistic verification ratio distribution:
+                # ~50% fully verified, ~25% phone-only, ~15% email-only, ~10% pending
+                rand_ratio = random.random()
+                if rand_ratio < 0.50:
+                    phone_ver, email_ver = 1, 1
+                elif rand_ratio < 0.75:
+                    phone_ver, email_ver = 1, 0
+                elif rand_ratio < 0.90:
+                    phone_ver, email_ver = 0, 1
+                else:
+                    phone_ver, email_ver = 0, 0
+
+                student_records.append((name, email, phone, dept, semester, phone_ver, email_ver))
+
+            # Batch insert records
+            cursor.executemany("""
+                INSERT INTO students (name, email, phone, department, semester, phone_verified, email_verified)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, student_records)
+
+            conn.commit()
+            print(f"[+] Successfully inserted {len(student_records)} student records.")
+
+        # -------------------------------------------------------------
+        # 3. Final Diagnostic Readout
+        # -------------------------------------------------------------
+        cursor.execute("SELECT COUNT(*) AS total FROM students")
+        total = cursor.fetchone()["total"]
+
+        cursor.execute("""
+            SELECT
+                SUM(CASE WHEN phone_verified = 1 AND email_verified = 1 THEN 1 ELSE 0 END) AS full_ver,
+                SUM(CASE WHEN phone_verified = 0 AND email_verified = 0 THEN 1 ELSE 0 END) AS unverified
+            FROM students
+        """)
+        diag = cursor.fetchone()
+
+        print("\n" + "=" * 54)
+        print("DATABASE POPULATION STATUS")
+        print("=" * 54)
+        print(f" Total Student Records  : {total}")
+        print(f" Fully Verified (2-Step): {diag['full_ver'] or 0}")
+        print(f" Unverified Records     : {diag['unverified'] or 0}")
+        print(f" Default Admin Login    : admin / admin123")
+        print("=" * 54 + "\n")
 
 
 if __name__ == "__main__":
-    seed_database(125)
+    try:
+        seed_database()
+    except Exception as err:
+        print(f"[!] Seeding failed: {err}", file=sys.stderr)
+        sys.exit(1)
