@@ -1,7 +1,7 @@
 import logging
 from twilio.base.exceptions import TwilioRestException
 from twilio.rest import Client
-from backend.config import settings
+from config import settings
 
 logger = logging.getLogger(__name__)
 
