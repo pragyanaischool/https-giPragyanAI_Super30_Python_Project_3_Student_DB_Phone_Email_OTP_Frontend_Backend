@@ -9,7 +9,7 @@ import os
 import sqlite3
 from contextlib import contextmanager
 from typing import Generator, Any, Dict, List, Optional
-from backend.config import settings
+from config import settings
 
 # Determine database engine from DATABASE_URL
 DB_URL = settings.DATABASE_URL
