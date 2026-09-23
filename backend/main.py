@@ -4,11 +4,11 @@ from fastapi import FastAPI, HTTPException, status, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr, Field
 
-from backend.config import settings
-from backend.database import init_db, get_db
-from backend.services.otp_service import OTPService
-from backend.services.twilio_service import TwilioService
-from backend.services.email_service import EmailService
+from config import settings
+from database import init_db, get_db
+from services.otp_service import OTPService
+from services.twilio_service import TwilioService
+from services.email_service import EmailService
 
 # Initialize FastAPI Application
 app = FastAPI(
