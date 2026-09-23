@@ -1,7 +1,8 @@
-"""Email Dispatch Service using Resend HTTPS API (Port 443).
+"""Email Dispatch Service using Brevo (Sendinblue) HTTPS API (Port 443).
 
 Bypasses cloud provider (Render) socket blocks on SMTP ports 25, 465, and 587.
-Falls back cleanly to mock logging if RESEND_API_KEY is not configured.
+Allows sending to any recipient address without custom domain verification.
+Falls back cleanly to mock logging if BREVO_API_KEY is not configured.
 """
 
 import json
@@ -22,16 +23,20 @@ except ImportError:
 
 class EmailService:
     def __init__(self):
-        # Read directly from environment or fallback to settings object if defined
-        self.api_key: Optional[str] = os.getenv("RESEND_API_KEY")
-        if not self.api_key and settings and hasattr(settings, "RESEND_API_KEY"):
-            self.api_key = getattr(settings, "RESEND_API_KEY")
+        # Read API key from environment variable or fallback to provided key
+        self.api_key: Optional[str] = os.getenv(
+            "BREVO_API_KEY",
+            ""
+        )
+        if not self.api_key and settings and hasattr(settings, "BREVO_API_KEY"):
+            self.api_key = getattr(settings, "BREVO_API_KEY")
 
-        # Free tier default domain sender; update once custom domain is verified
-        self.from_email: str = os.getenv("EMAIL_FROM", "EduPortal <onboarding@resend.dev>")
+        # Sender email: Must match the account or verified sender in your Brevo console
+        self.sender_email: str = os.getenv("SENDER_EMAIL", "pragyan.ai.school@gmail.com")
+        self.sender_name: str = os.getenv("SENDER_NAME", "EduPortal Verification")
 
     def send_email(self, to_email: str, subject: str, content: str) -> bool:
-        """Dispatches an email via Resend HTTPS REST API.
+        """Dispatches an email via Brevo v3 HTTPS REST API.
 
         Args:
             to_email: Target recipient address.
@@ -39,20 +44,20 @@ class EmailService:
             content: Raw message text containing the OTP.
 
         Returns:
-            bool: True if accepted by Resend (HTTP 200/201), False otherwise.
+            bool: True if accepted by Brevo (HTTP 200, 201, 202), False otherwise.
         """
         clean_email = to_email.strip().lower()
 
-        # Fallback to mock logging if no API key is provided
+        # Fallback to mock logging if no API key is set
         if not self.api_key or self.api_key.startswith("your_"):
-            print(f"\n================================================")
+            print("\n================================================")
             print(f"[EMAIL MOCK MODE] Outbound to: {clean_email}")
             print(f"Subject: {subject}")
             print(f"Body:\n{content}")
-            print(f"================================================\n")
+            print("================================================\n")
             return False
 
-        # Extract 6-digit OTP passcode for styled HTML presentation
+        # Extract 4-8 digit OTP passcode for styled HTML presentation
         otp_match = re.search(r"\b\d{4,8}\b", content)
         otp_display = otp_match.group(0) if otp_match else "------"
 
@@ -80,34 +85,40 @@ class EmailService:
         """
 
         payload = {
-            "from": self.from_email,
-            "to": [clean_email],
+            "sender": {
+                "name": self.sender_name,
+                "email": self.sender_email
+            },
+            "to": [
+                {"email": clean_email}
+            ],
             "subject": subject,
-            "html": html_body,
-            "text": content,
+            "htmlContent": html_body,
+            "textContent": content
         }
 
         req = urllib.request.Request(
-            "https://api.resend.com/emails",
+            "https://api.brevo.com/v3/smtp/email",
             data=json.dumps(payload).encode("utf-8"),
             headers={
-                "Authorization": f"Bearer {self.api_key.strip()}",
+                "api-key": self.api_key.strip(),
                 "Content-Type": "application/json",
-                "User-Agent": "EduPortal-Backend/2.0",
+                "Accept": "application/json",
+                "User-Agent": "EduPortal-Backend/2.0"
             },
-            method="POST",
+            method="POST"
         )
 
         try:
             with urllib.request.urlopen(req, timeout=12.0) as response:
-                if response.status in (200, 201):
+                if response.status in (200, 201, 202):
                     res_body = response.read().decode("utf-8")
-                    print(f"[✓] Resend API Success: Dispatched to {clean_email} | Response: {res_body}")
+                    print(f"[✓] Brevo API Success: Dispatched to {clean_email} | Response: {res_body}")
                     return True
 
         except urllib.error.HTTPError as e:
             err_msg = e.read().decode("utf-8", errors="ignore")
-            print(f"[!] Resend HTTP API Error ({e.code}) for {clean_email}: {err_msg}")
+            print(f"[!] Brevo HTTP API Error ({e.code}) for {clean_email}: {err_msg}")
             return False
         except Exception as e:
             print(f"[!] Unexpected error during email dispatch to {clean_email}: {e}")
