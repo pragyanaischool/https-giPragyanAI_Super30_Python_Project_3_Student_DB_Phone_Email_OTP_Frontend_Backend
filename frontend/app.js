@@ -1,6 +1,7 @@
 /**
  * Frontend Application Controller for EduPortal
- * Manages Tab Switching, Analytics Visualization, Directory Filtering, and OTP Handlers.
+ * Manages Tab Switching, Analytics Visualization, Directory Filtering,
+ * Independent 2-Step OTP Dispatch/Resend, and Verification Inspector.
  */
 
 // Resolved API Base URL from frontend/config.js with fallback
@@ -8,7 +9,7 @@ const API_BASE = (typeof CONFIG !== "undefined" && CONFIG.API_BASE_URL)
   ? CONFIG.API_BASE_URL
   : (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1"
       ? "http://127.0.0.1:8000/api"
-      : "https://student-verification-backend.onrender.com/api");
+      : "https://https-gipragyanai-super30-python-project.onrender.com/api");
 
 // Global Application State
 let currentPage = 1;
@@ -16,24 +17,30 @@ const pageSize = 10;
 let deptChartInstance = null;
 let verifyChartInstance = null;
 let searchDebounceTimeout = null;
-let activeStudent = { phone: "", email: "" };
+
+// Active Student Verification Session
+let activeStudent = {
+  phone: "",
+  email: "",
+  phoneVerified: false,
+  emailVerified: false,
+  phoneTimer: null,
+  emailTimer: null
+};
 
 // -------------------------------------------------------------
 // Navigation & Tab Switching
 // -------------------------------------------------------------
 function switchTab(tabId) {
-  // Hide all tab panes
   document.querySelectorAll(".tab-pane").forEach(el => el.classList.remove("active"));
   document.querySelectorAll(".nav-btn").forEach(el => el.classList.remove("active"));
 
-  // Activate selected pane and corresponding button
   const targetPane = document.getElementById(tabId);
   const targetBtn = document.getElementById(`btn-${tabId}`);
 
   if (targetPane) targetPane.classList.add("active");
   if (targetBtn) targetBtn.classList.add("active");
 
-  // Re-fetch latest analytics when returning to admin panel
   if (tabId === "admin-tab") {
     loadAllAdminData();
   }
@@ -49,10 +56,15 @@ async function loadAnalytics() {
     const data = await res.json();
 
     // 1. Update KPI Cards
-    document.getElementById("kpi-total").innerText = Number(data.kpis.total_students || 0).toLocaleString();
-    document.getElementById("kpi-verified").innerText = Number(data.kpis.fully_verified || 0).toLocaleString();
-    document.getElementById("kpi-pending").innerText = Number(data.kpis.partially_verified || 0).toLocaleString();
-    document.getElementById("kpi-rate").innerText = `${data.kpis.verification_rate || 0}%`;
+    const kpiTotal = document.getElementById("kpi-total");
+    const kpiVerified = document.getElementById("kpi-verified");
+    const kpiPending = document.getElementById("kpi-pending");
+    const kpiRate = document.getElementById("kpi-rate");
+
+    if (kpiTotal) kpiTotal.innerText = Number(data.kpis?.total_students || 0).toLocaleString();
+    if (kpiVerified) kpiVerified.innerText = Number(data.kpis?.fully_verified || 0).toLocaleString();
+    if (kpiPending) kpiPending.innerText = Number(data.kpis?.partially_verified || 0).toLocaleString();
+    if (kpiRate) kpiRate.innerText = `${data.kpis?.verification_rate || 0}%`;
 
     // 2. Bar Chart: Department Distribution
     const deptLabels = Object.keys(data.department_distribution || {});
@@ -180,9 +192,12 @@ async function fetchTableData() {
 
     if (!result.students || result.students.length === 0) {
       tbody.innerHTML = `<tr><td colspan="8" class="text-center" style="color: #94a3b8;">No matching student records found.</td></tr>`;
-      document.getElementById("pageInfo").innerText = "Showing Page 0 of 0 (0 records)";
-      document.getElementById("prevBtn").disabled = true;
-      document.getElementById("nextBtn").disabled = true;
+      const pageInfo = document.getElementById("pageInfo");
+      if (pageInfo) pageInfo.innerText = "Showing Page 0 of 0 (0 records)";
+      const prevBtn = document.getElementById("prevBtn");
+      const nextBtn = document.getElementById("nextBtn");
+      if (prevBtn) prevBtn.disabled = true;
+      if (nextBtn) nextBtn.disabled = true;
       return;
     }
 
@@ -202,9 +217,14 @@ async function fetchTableData() {
     });
 
     const totalPages = result.total_pages || 1;
-    document.getElementById("pageInfo").innerText = `Showing Page ${result.page} of ${totalPages} (${result.total} records)`;
-    document.getElementById("prevBtn").disabled = result.page <= 1;
-    document.getElementById("nextBtn").disabled = result.page >= totalPages;
+    const pageInfo = document.getElementById("pageInfo");
+    if (pageInfo) {
+      pageInfo.innerText = `Showing Page ${result.page} of ${totalPages} (${result.total} records)`;
+    }
+    const prevBtn = document.getElementById("prevBtn");
+    const nextBtn = document.getElementById("nextBtn");
+    if (prevBtn) prevBtn.disabled = result.page <= 1;
+    if (nextBtn) nextBtn.disabled = result.page >= totalPages;
 
   } catch (err) {
     console.error("Directory fetch error:", err);
@@ -274,14 +294,24 @@ async function handleRegistration(e) {
 
     if (!res.ok) throw new Error(data.detail || "Registration failed");
 
-    // Cache active student contact credentials for subsequent OTP verification
+    // Cache active student verification credentials
     activeStudent.phone = payload.phone;
     activeStudent.email = payload.email;
+    activeStudent.phoneVerified = false;
+    activeStudent.emailVerified = false;
 
     showNotification(notify, `${data.message} OTPs sent to ${payload.phone} and ${payload.email}`, "success");
 
+    // Populate target labels
+    const phoneLabel = document.getElementById("displayPhoneLabel");
+    const emailLabel = document.getElementById("displayEmailLabel");
+    if (phoneLabel) phoneLabel.innerText = payload.phone;
+    if (emailLabel) emailLabel.innerText = payload.email;
+
     // Display the verification drawer and reset field states
-    document.getElementById("otpDrawer").classList.remove("hidden");
+    const drawer = document.getElementById("otpDrawer");
+    if (drawer) drawer.classList.remove("hidden");
+
     document.getElementById("phoneVerifyBadge").innerText = "";
     document.getElementById("emailVerifyBadge").innerText = "";
     document.getElementById("phoneOtpInput").value = "";
@@ -291,6 +321,17 @@ async function handleRegistration(e) {
     document.getElementById("btnVerifyPhone").disabled = false;
     document.getElementById("btnVerifyEmail").disabled = false;
 
+    // Reset inspector box
+    const debugBox = document.getElementById("debugCodesContainer");
+    if (debugBox) {
+      debugBox.classList.add("hidden");
+      debugBox.innerHTML = "";
+    }
+
+    // Start 30s cooldown timer on both resend buttons
+    startCooldownTimer("phone", 30);
+    startCooldownTimer("email", 30);
+
   } catch (err) {
     showNotification(notify, err.message, "danger");
   } finally {
@@ -299,6 +340,9 @@ async function handleRegistration(e) {
   }
 }
 
+// -------------------------------------------------------------
+// Verification & Individual Resend Logic
+// -------------------------------------------------------------
 async function verifyOTP(type) {
   const notify = document.getElementById("notifyMessage");
   const isPhone = type === "phone";
@@ -307,6 +351,7 @@ async function verifyOTP(type) {
   const inputId = isPhone ? "phoneOtpInput" : "emailOtpInput";
   const btnId = isPhone ? "btnVerifyPhone" : "btnVerifyEmail";
   const badgeId = isPhone ? "phoneVerifyBadge" : "emailVerifyBadge";
+  const resendBtnId = isPhone ? "btnResendPhone" : "btnResendEmail";
 
   const inputEl = document.getElementById(inputId);
   const otp = inputEl ? inputEl.value.trim() : "";
@@ -328,18 +373,133 @@ async function verifyOTP(type) {
 
     showNotification(notify, `✓ ${data.message}`, "success");
 
-    // Lock input and update badge indicator
+    // Lock input and button
     document.getElementById(inputId).disabled = true;
     document.getElementById(btnId).disabled = true;
+    const resendBtn = document.getElementById(resendBtnId);
+    if (resendBtn) resendBtn.disabled = true;
+
+    // Update badge indicator
     const badge = document.getElementById(badgeId);
     badge.innerText = "✓ Verified";
     badge.style.color = "#10b981";
 
-    // Refresh metrics in background
+    // Track state
+    if (isPhone) activeStudent.phoneVerified = true;
+    else activeStudent.emailVerified = true;
+
+    // Refresh analytics in background
     loadAnalytics();
+
+    // Check if entire verification completed
+    if (activeStudent.phoneVerified && activeStudent.emailVerified) {
+      showNotification(notify, "🎉 All credentials verified! Student registered successfully.", "success");
+      fetchTableData();
+    }
 
   } catch (err) {
     showNotification(notify, err.message, "danger");
+  }
+}
+
+async function handleResendOTP(channel) {
+  const notify = document.getElementById("notifyMessage");
+  const isPhone = channel === "phone";
+  const identifier = isPhone ? activeStudent.phone : activeStudent.email;
+  const resendBtnId = isPhone ? "btnResendPhone" : "btnResendEmail";
+
+  if (!identifier) {
+    showNotification(notify, "No active registration in progress. Please register first.", "danger");
+    return;
+  }
+
+  const resendBtn = document.getElementById(resendBtnId);
+  if (resendBtn) resendBtn.disabled = true;
+
+  try {
+    const res = await fetch(`${API_BASE}/students/resend-otp/${channel}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ identifier })
+    });
+    const data = await res.json();
+
+    if (!res.ok) throw new Error(data.detail || `Failed to resend ${channel} code.`);
+
+    showNotification(notify, `✓ ${data.message}`, "success");
+
+    // Reset inspection box if user fetches new codes
+    const debugBox = document.getElementById("debugCodesContainer");
+    if (debugBox && !debugBox.classList.contains("hidden")) {
+      fetchActiveOtpDebug();
+    }
+
+    startCooldownTimer(channel, 45);
+
+  } catch (err) {
+    showNotification(notify, err.message, "danger");
+    if (resendBtn) resendBtn.disabled = false;
+  }
+}
+
+function startCooldownTimer(channel, seconds) {
+  const isPhone = channel === "phone";
+  const btnId = isPhone ? "btnResendPhone" : "btnResendEmail";
+  const btn = document.getElementById(btnId);
+  if (!btn) return;
+
+  // Clear existing timer if any
+  if (isPhone && activeStudent.phoneTimer) clearInterval(activeStudent.phoneTimer);
+  if (!isPhone && activeStudent.emailTimer) clearInterval(activeStudent.emailTimer);
+
+  btn.disabled = true;
+  let remaining = seconds;
+
+  const timer = setInterval(() => {
+    btn.innerText = `Resend (${remaining}s)`;
+    remaining--;
+
+    if (remaining < 0) {
+      clearInterval(timer);
+      btn.disabled = false;
+      btn.innerText = isPhone ? "Resend SMS" : "Resend Email";
+    }
+  }, 1000);
+
+  if (isPhone) activeStudent.phoneTimer = timer;
+  else activeStudent.emailTimer = timer;
+}
+
+// -------------------------------------------------------------
+// Debug / Active OTP Inspector
+// -------------------------------------------------------------
+async function fetchActiveOtpDebug() {
+  const container = document.getElementById("debugCodesContainer");
+  if (!container) return;
+
+  container.classList.remove("hidden");
+  container.innerHTML = `<span style="color: #94a3b8; font-size: 12px;">Querying server memory for active codes...</span>`;
+
+  try {
+    const phoneQuery = encodeURIComponent(activeStudent.phone || "");
+    const emailQuery = encodeURIComponent(activeStudent.email || "");
+
+    const [resPhone, resEmail] = await Promise.all([
+      fetch(`${API_BASE}/debug/recent-otp?identifier=${phoneQuery}`).then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch(`${API_BASE}/debug/recent-otp?identifier=${emailQuery}`).then(r => r.ok ? r.json() : null).catch(() => null)
+    ]);
+
+    const phoneCode = resPhone?.active_otp || "Expired / Not Found";
+    const emailCode = resEmail?.active_otp || "Expired / Not Found";
+
+    container.innerHTML = `
+      <div style="background: #151d30; border: 1px solid #222f49; padding: 10px; border-radius: 6px; font-family: monospace; font-size: 13px; text-align: left; margin-top: 8px;">
+        <div style="color: #38bdf8; margin-bottom: 4px;">📱 SMS OTP: <strong style="color: #10b981; letter-spacing: 2px;">${phoneCode}</strong></div>
+        <div style="color: #38bdf8;">✉️ Email OTP: <strong style="color: #10b981; letter-spacing: 2px;">${emailCode}</strong></div>
+      </div>
+    `;
+  } catch (err) {
+    container.innerHTML = `<span style="color: #ef4444; font-size: 12px;">Failed to fetch debug codes. Verify backend logs.</span>`;
   }
 }
 
