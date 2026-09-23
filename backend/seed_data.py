@@ -4,15 +4,30 @@ Initializes tables and seeds:
 - 1 Superadmin account
 - 125 Student records across 5 academic departments with varying verification states
 
-Fully compatible with both SQLite and PostgreSQL via the backend.database abstraction layer.
+Fully compatible with both SQLite and PostgreSQL via the database abstraction layer.
 """
 
 import hashlib
+import os
 import random
 import sys
-from database import init_db, get_db
+from pathlib import Path
 
-# Deterministic random seed for reproducible records
+# Ensure project root is in sys.path regardless of execution context
+CURRENT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = CURRENT_DIR.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+if str(CURRENT_DIR) not in sys.path:
+    sys.path.insert(0, str(CURRENT_DIR))
+
+# Import dual-compatible database routines
+try:
+    from backend.database import init_db, get_db
+except ImportError:
+    from database import init_db, get_db
+
+# Deterministic random seed for reproducible sample records
 random.seed(42)
 
 FIRST_NAMES = [
@@ -39,7 +54,7 @@ DEPARTMENTS = [
 
 
 def hash_password(password: str) -> str:
-    """Computes a secure SHA-256 digest for admin credentials."""
+    """Computes a SHA-256 digest for admin credentials."""
     return hashlib.sha256(password.encode("utf-8")).hexdigest()
 
 
@@ -92,11 +107,9 @@ def seed_database():
                 existing_emails.add(record["email"])
                 existing_phones.add(record["phone"])
 
-            inserted_count = 0
             student_records = []
 
             for i in range(1, needed + 1):
-                # Form unique names, emails, and phones
                 first = random.choice(FIRST_NAMES)
                 last = random.choice(LAST_NAMES)
                 name = f"{first} {last}"
@@ -108,7 +121,7 @@ def seed_database():
                     email = f"{slug}.{random.randint(10, 999)}@student.edu"
                 existing_emails.add(email)
 
-                # Generate unique 10-digit Indian phone with +91 country prefix
+                # Generate unique phone number (+91 format)
                 phone_tail = f"{random.randint(6000000000, 9999999999)}"
                 phone = f"+91{phone_tail}"
                 while phone in existing_phones:
@@ -118,21 +131,21 @@ def seed_database():
                 dept = random.choice(DEPARTMENTS)
                 semester = random.randint(1, 8)
 
-                # Realistic verification ratio distribution:
-                # ~50% fully verified, ~25% phone-only, ~15% email-only, ~10% pending
-                rand_ratio = random.random()
-                if rand_ratio < 0.50:
+                # Verification status distribution:
+                # ~50% fully verified, ~25% phone only, ~15% email only, ~10% pending
+                rand_val = random.random()
+                if rand_val < 0.50:
                     phone_ver, email_ver = 1, 1
-                elif rand_ratio < 0.75:
+                elif rand_val < 0.75:
                     phone_ver, email_ver = 1, 0
-                elif rand_ratio < 0.90:
+                elif rand_val < 0.90:
                     phone_ver, email_ver = 0, 1
                 else:
                     phone_ver, email_ver = 0, 0
 
                 student_records.append((name, email, phone, dept, semester, phone_ver, email_ver))
 
-            # Batch insert records
+            # Batch insert student records
             cursor.executemany("""
                 INSERT INTO students (name, email, phone, department, semester, phone_verified, email_verified)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -142,7 +155,7 @@ def seed_database():
             print(f"[+] Successfully inserted {len(student_records)} student records.")
 
         # -------------------------------------------------------------
-        # 3. Final Diagnostic Readout
+        # 3. Final Diagnostic Summary
         # -------------------------------------------------------------
         cursor.execute("SELECT COUNT(*) AS total FROM students")
         total = cursor.fetchone()["total"]
