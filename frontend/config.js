@@ -16,10 +16,14 @@ const CONFIG = {
     }
 
     // Live Render production backend URL
-    // Replace with your actual Render service name if different
-    return "https://student-verification-backend.onrender.com/api";
+    return "https://https-gipragyanai-super30-python-project.onrender.com/api";
   })()
 };
 
 // Freeze the object to prevent accidental runtime modifications
 Object.freeze(CONFIG);
+
+// Export for module systems (ES Modules) while keeping global access for standard scripts
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = CONFIG;
+}
